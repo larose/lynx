@@ -30,12 +30,12 @@ func newFieldFreqsWriter(directory, segment, fieldName string) (*FieldFreqsWrite
 /*
 Block:
   - Header:
-	- [0] num docs (byte)
-	- [1] first doc id (uint32)
-	- [5] last doc id (uint32)
-	- [9] max term freq (uint64)
-	- [17] min field length id (byte)
-	- [18] length bytes (uint32)
+  - [0] num docs (byte)
+  - [1] first doc id (uint32)
+  - [5] last doc id (uint32)
+  - [9] max term freq (uint64)
+  - [17] min field length id (byte)
+  - [18] length bytes (uint32)
   - Doc ids block
   - Term freq block
 */
