@@ -123,11 +123,11 @@ func (reader *IndexReader) SearchByExactValues(fieldName string, values [][]byte
 
 			docId := DocumentId(0)
 			it := fieldFreqsReader.TermFreqsIterator(termInfo)
-			if !it.NextShallow(docId) {
+			if !it.SeekBlock(docId) {
 				continue
 			}
 
-			for it.Next(docId) {
+			for it.SeekDoc(docId) {
 				segmentDocIds.Add(uint32(it.DocId()))
 				docId = it.DocId() + 1
 			}

@@ -69,25 +69,25 @@ func newRootTermDocIterator(fieldIndex int, freqsIterator *index.TermFreqsIterat
 
 func (t *RootTermDocIterator) Next(fieldLengthNorms *index.FieldLengthNorms, lowerBound float32) (index.DocumentId, float32, bool) {
 	for {
-		exists := t.freqsIterator.NextShallow(t.docId)
+		exists := t.freqsIterator.SeekBlock(t.docId)
 		if !exists {
 			return 0, 0, false
 		}
 
-		if t.freqsIterator.LastDocId != t.blockLastDocId {
+		if t.freqsIterator.LastDocId() != t.blockLastDocId {
 			upperBound := t.blockUpperBound()
 
 			if upperBound < lowerBound {
 				// fmt.Print("skipped block")
-				t.docId = t.freqsIterator.LastDocId + 1
+				t.docId = t.freqsIterator.LastDocId() + 1
 				continue
 			}
 
-			t.blockLastDocId = t.freqsIterator.LastDocId
+			t.blockLastDocId = t.freqsIterator.LastDocId()
 			t.blockUpperBoundCache = upperBound
 		}
 
-		exists = t.freqsIterator.Next(t.docId)
+		exists = t.freqsIterator.SeekDoc(t.docId)
 		if !exists {
 			return 0, 0, false
 		}
@@ -175,7 +175,7 @@ func (t *ChildTermDocIterator) computeScoreForUpperBound(freq uint64, lengthId b
 }
 
 func (t *ChildTermDocIterator) BlockMaxDocId() index.DocumentId {
-	return t.freqsIterator.LastDocId
+	return t.freqsIterator.LastDocId()
 }
 
 func (t *ChildTermDocIterator) BlockUpperBound() float32 {
@@ -196,11 +196,11 @@ func (t *ChildTermDocIterator) IDF() float32 {
 }
 
 func (t *ChildTermDocIterator) Next(docId index.DocumentId) bool {
-	return t.freqsIterator.Next(docId)
+	return t.freqsIterator.SeekDoc(docId)
 }
 
 func (t *ChildTermDocIterator) NextShallow(docId index.DocumentId) bool {
-	return t.freqsIterator.NextShallow(docId)
+	return t.freqsIterator.SeekBlock(docId)
 }
 
 func (t *ChildTermDocIterator) Score(fieldLengthNorms *index.FieldLengthNorms) float32 {

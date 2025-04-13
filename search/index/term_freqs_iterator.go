@@ -1,146 +1,87 @@
 package index
 
-import (
-	"bytes"
-	"encoding/binary"
-	"io"
-	"log"
-)
-
+// TermFreqsIterator provides a unified interface for iterating through term frequencies
+// while using the decoupled block and document iterators internally.
 type TermFreqsIterator struct {
-	reader *bytes.Reader
-
-	// Block header
-	blockHeaderDecoded bool
-	numDocs            byte
-	firstDocId         DocumentId
-	LastDocId          DocumentId
-	maxFreq            uint64
-	minLengthId        byte
-	length             uint32
-	nextBlockOffset    int64
-
-	// Block data
-	blockDataDecoded bool
-	indexInBlockId   int
-	blockDocIds      []DocumentId
-	blockFreqs       []uint64
+	blockIterator *TermFreqsBlockIterator
+	docIterator   *TermFreqsDocIterator
+	currentDocId  DocumentId
+	lastDocId     DocumentId // Made private with getter method
 }
 
+// newTermFreqsIterator creates a new TermFreqsIterator for the given term.
 func newTermFreqsIterator(fileReader FileReader, termInfo *TermInfo) *TermFreqsIterator {
-	data := fileReader.Slice(termInfo.FreqsFileStartOffset, termInfo.FreqsFileEndOffset)
-	reader := bytes.NewReader(data)
+	blockIterator := newTermFreqsBlockIterator(fileReader, termInfo)
 
 	return &TermFreqsIterator{
-		indexInBlockId: -1,
-		blockDocIds:    make([]DocumentId, 0, 128),
-		blockFreqs:     make([]uint64, 0, 128),
-		reader:         reader,
+		blockIterator: blockIterator,
+		docIterator:   nil,
+		currentDocId:  0,
 	}
 }
 
-func (it *TermFreqsIterator) Next(docId DocumentId) bool {
-	if !it.NextShallow(docId) {
-		return false
-	}
-
-	if !it.blockDataDecoded {
-		it.blockDocIds = it.blockDocIds[:it.numDocs]
-		it.blockFreqs = it.blockFreqs[:it.numDocs]
-
-		for i := 0; i < int(it.numDocs); i++ {
-			value, err := binary.ReadUvarint(it.reader)
-			if err != nil {
-				log.Fatal(err)
+// SeekDoc advances to the document with ID >= docId.
+// Returns false if there are no more documents.
+func (it *TermFreqsIterator) SeekDoc(docId DocumentId) bool {
+	// If we've exhausted the current doc iterator or don't have one yet
+	if it.docIterator == nil || !it.docIterator.SeekDoc(docId) {
+		// Try to advance to a block that may contain docId
+		for {
+			if !it.SeekBlock(docId) {
+				return false
 			}
 
-			if i == 0 {
-				it.blockDocIds[i] = DocumentId(value)
-			} else {
-				it.blockDocIds[i] = it.blockDocIds[i-1] + DocumentId(value)
-			}
-		}
+			// Create a new doc iterator for this block
+			it.docIterator = it.blockIterator.CreateDocIterator()
 
-		for i := 0; i < int(it.numDocs); i++ {
-			value, err := binary.ReadUvarint(it.reader)
-			if err != nil {
-				log.Fatal(err)
+			// Try to find a document with ID >= docId in this block
+			if it.docIterator.SeekDoc(docId) {
+				it.currentDocId = it.docIterator.DocId()
+				return true
 			}
 
-			it.blockFreqs[i] = value
-		}
-
-		it.indexInBlockId = 0
-		it.blockDataDecoded = true
-	}
-
-	for ; it.indexInBlockId < len(it.blockDocIds); it.indexInBlockId++ {
-		_docId := it.blockDocIds[it.indexInBlockId]
-
-		if docId <= _docId {
-			break
+			// If not found, try the next block
+			docId = it.blockIterator.LastDocId() + 1
 		}
 	}
 
-	if it.indexInBlockId < len(it.blockDocIds) {
-		return true
-	}
-
-	return it.NextShallow(it.LastDocId + 1)
+	it.currentDocId = it.docIterator.DocId()
+	return true
 }
 
-func (it *TermFreqsIterator) NextShallow(docId DocumentId) bool {
-	decodeHeader := func() {
-		start, err := it.reader.Seek(0, io.SeekCurrent)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		binary.Read(it.reader, binary.BigEndian, &it.numDocs)
-		binary.Read(it.reader, binary.BigEndian, &it.firstDocId)
-		binary.Read(it.reader, binary.BigEndian, &it.LastDocId)
-		binary.Read(it.reader, binary.BigEndian, &it.maxFreq)
-		binary.Read(it.reader, binary.BigEndian, &it.minLengthId)
-		binary.Read(it.reader, binary.BigEndian, &it.length)
-		it.nextBlockOffset = start + int64(it.length)
-		it.blockDataDecoded = false
+// SeekBlock advances to the block that may contain documents with ID >= docId.
+// Returns false if there are no more blocks.
+func (it *TermFreqsIterator) SeekBlock(docId DocumentId) bool {
+	result := it.blockIterator.SeekBlock(docId)
+	if result {
+		it.lastDocId = it.blockIterator.LastDocId()
 	}
-
-	for {
-		if !it.blockHeaderDecoded {
-			decodeHeader()
-			it.blockHeaderDecoded = true
-		}
-
-		if docId <= it.LastDocId {
-			return true
-		}
-
-		if it.reader.Len() == 0 {
-			return false
-		}
-
-		_, err := it.reader.Seek(it.nextBlockOffset, io.SeekStart)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		decodeHeader()
-	}
+	return result
 }
 
+// LastDocId returns the ID of the last document in the current block.
+func (it *TermFreqsIterator) LastDocId() DocumentId {
+	return it.lastDocId
+}
+
+// BlockMaxFreqMinLengthId returns the maximum term frequency and minimum field length ID
+// in the current block. This is used for computing score bounds.
 func (it *TermFreqsIterator) BlockMaxFreqMinLengthId() (uint64, byte) {
-	return it.maxFreq, it.minLengthId
+	return it.blockIterator.BlockMaxFreqMinLengthId()
 }
 
+// DocId returns the ID of the current document.
 func (it *TermFreqsIterator) DocId() DocumentId {
-	if it.indexInBlockId != -1 {
-		return it.blockDocIds[it.indexInBlockId]
+	if it.docIterator != nil {
+		return it.docIterator.DocId()
 	}
-
-	return it.firstDocId
+	return it.blockIterator.FirstDocId()
 }
 
+// TermFreq returns the term frequency for the current document.
 func (it *TermFreqsIterator) TermFreq() uint64 {
-	return it.blockFreqs[it.indexInBlockId]
+	if it.docIterator != nil {
+		return it.docIterator.TermFreq()
+	}
+	return 0
 }
